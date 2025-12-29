@@ -1,77 +1,31 @@
+import shutil
 from pathlib import Path
 
-from src.pipeline.context import PipelineContext
-from src.pipeline.validate import validate_config
-from src.io.xml_writer import write_dummy_musicxml
-from src.audio.preprocess import preprocess_audio
-from src.pitch.basic_pitch_extractor import extract_basic_pitch
-from src.chord.chords_extract import extract_chords
-from src.pitch.postprocess_basic import clean_midi_notes
-
-def build_context(config: dict) -> PipelineContext:
-    validate_config(config)
-
-    file_path = Path(config["file"])
-    purpose = config["purpose"]
-
-    return PipelineContext(
-        file=file_path,
-        title=config["title"],
-        purpose=purpose,
-        style=config["style"],
-        difficulty=config["difficulty"],
-        has_lyrics=(purpose == "2"),
-    )
-
-def run_pipeline(config: dict, out_dir: Path = Path("outputs")) -> Path:
-    ctx = build_context(config)
-
-    # Step 1: Audio Preprocessing
-    print("Step 1: Audio Preprocessing...")
-    audio_dir = out_dir / "audio"
-    ctx.standard_wav = preprocess_audio(ctx.file, audio_dir)
-
-    # Step 2: Pitch Extraction (Basic Pitch)
-    print("Step 2: Pitch Extraction...")
-    pitch_dir = out_dir / "pitch"
-    raw_midi_path = extract_basic_pitch(
-        ctx.standard_wav,
-        pitch_dir,
-    )
+def run_pipeline(args: dict, out_dir: Path) -> str:
     
-    # Step 2.5: MIDI Cleaning
-    print("Step 2.5: Cleaning MIDI Output...")
-    clean_midi_path = pitch_dir / (raw_midi_path.stem + "_clean.mid")
-    ctx.pitch_midi = clean_midi_notes(
-        input_path=raw_midi_path, 
-        output_path=clean_midi_path
-    )
+    # 1. purpose 값 확인 (문자열로 들어올 수 있으니 안전하게 처리)
+    # 백엔드에서 1, 2 등을 보내줌
+    purpose = str(args.get("purpose", "1"))
+    
+    print(f"--- [TEST PIPELINE] 요청된 purpose: {purpose} ---")
 
-    # Step 3: Chord Extraction
-    print(f"Step 3: Chord Extraction...")
-    try:
-        ctx.chords = extract_chords(ctx.standard_wav)
-        
-        if ctx.chords:
-            print(f"   Success! Extracted {len(ctx.chords)} chords.")
-            print(f"   Preview: {ctx.chords[:3]}...")
-        else:
-            print("   Warning: No chords extracted.")
-            
-    except Exception as e:
-        print(f"   Error during chord extraction: {e}")
-        ctx.chords = []
+    # 2. purpose에 따른 원본 파일 경로 설정 (절대 경로)
+    if purpose == "1":
+        source_file = Path("/home/jisu/PerPitModel/outputs/pps1/result.xml")
+    elif purpose == "2":
+        source_file = Path("/home/jisu/PerPitModel/outputs/pps2/result.xml")
 
-    print("Step 4: Generating XML...")
-    out_path = out_dir / "score.xml"
-    ctx.output_xml = write_dummy_musicxml(
-        title=ctx.title,
-        out_path=out_path,
-        midi_path=ctx.pitch_midi,
-        chords=ctx.chords
-    )
+    # 3. 결과 파일이 저장될 경로 (outputs/{job_id}/score.xml)
+    # out_dir은 server.py에서 이미 생성해서 넘겨줍니다.
+    target_path = out_dir / "score.xml"
 
+    # 4. 파일 복사 수행
+    if source_file.exists():
+        shutil.copy(source_file, target_path)
+        print(f"파일 복사 성공: {source_file} -> {target_path}")
+    else:
+        # 지정된 경로에 파일이 없으면 에러 발생
+        raise FileNotFoundError(f"{source_file}")
 
-
-    return ctx.output_xml
-
+    # 5. 복사된 파일의 경로를 문자열로 반환 (server.py로 전달)
+    return str(target_path)
