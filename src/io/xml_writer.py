@@ -17,19 +17,19 @@ def write_dummy_musicxml(
     
     # 1. MIDI 파일이 존재하는지 확인하고 불러오기
     if midi_path and midi_path.exists():
-        print(f"   📝 Loading MIDI from: {midi_path.name}")
+        print(f"Loading MIDI from: {midi_path.name}")
         try:
             # music21을 이용해 MIDI 파일을 파싱(변환)합니다.
             score = converter.parse(str(midi_path))
         except Exception as e:
-            print(f"   ⚠️ Failed to load MIDI: {e}. Falling back to dummy.")
+            print(f"Failed to load MIDI: {e}. Falling back to dummy.")
             score = stream.Score()
             part = stream.Part()
             part.append(note.Note("C4")) # 실패 시 안전장치
             score.append(part)
     else:
         # 2. MIDI가 없으면 기존처럼 '도-미-솔' (Dummy) 생성
-        print("   📝 No MIDI found. Creating dummy score.")
+        print("No MIDI found. Creating dummy score.")
         score = stream.Score()
         part = stream.Part()
         part.append(note.Note("C4", quarterLength=1))
@@ -44,7 +44,7 @@ def write_dummy_musicxml(
 
     # 4. (옵션) 코드 정보가 있다면 콘솔에 출력 (나중에 악보에 삽입 가능)
     if chords:
-        print(f"   ℹ️ {len(chords)} chords provided (Integration pending...)")
+        print(f"{len(chords)} chords provided (Integration pending...)")
         # TODO: 여기에 코드 심볼을 악보 타임라인에 맞춰 넣는 로직이 들어가야 함
         # 현재는 오디오 시간(초)과 악보 박자(Beat)를 맞추는 작업이 필요해서 생략
 
