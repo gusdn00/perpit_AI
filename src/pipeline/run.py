@@ -6,6 +6,7 @@ from src.io.xml_writer import write_dummy_musicxml
 from src.audio.preprocess import preprocess_audio
 from src.pitch.basic_pitch_extractor import extract_basic_pitch
 from src.chord.chords_extract import extract_chords
+from src.pitch.postprocess_basic import clean_midi_notes
 
 def build_context(config: dict) -> PipelineContext:
     validate_config(config)
@@ -33,9 +34,17 @@ def run_pipeline(config: dict, out_dir: Path = Path("outputs")) -> Path:
     # Step 2: Pitch Extraction (Basic Pitch)
     print("Step 2: Pitch Extraction...")
     pitch_dir = out_dir / "pitch"
-    ctx.pitch_midi = extract_basic_pitch(
+    raw_midi_path = extract_basic_pitch(
         ctx.standard_wav,
         pitch_dir,
+    )
+    
+    # Step 2.5: MIDI Cleaning
+    print("Step 2.5: Cleaning MIDI Output...")
+    clean_midi_path = pitch_dir / (raw_midi_path.stem + "_clean.mid")
+    ctx.pitch_midi = clean_midi_notes(
+        input_path=raw_midi_path, 
+        output_path=clean_midi_path
     )
 
     # Step 3: Chord Extraction
