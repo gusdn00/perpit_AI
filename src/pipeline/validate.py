@@ -7,7 +7,7 @@ class ConfigError(ValueError):
 
 
 def validate_config(config: dict) -> None:
-    required = {"file", "title", "purpose", "style", "difficulty"}
+    required = {"file", "title", "instrument", "purpose", "style", "difficulty"}
     missing = required - set(config.keys())
     if missing:
         raise ConfigError(f"Missing required keys: {sorted(missing)}")
@@ -21,6 +21,9 @@ def validate_config(config: dict) -> None:
 
     if not isinstance(config["title"], str) or not config["title"].strip():
         raise ConfigError("title must be a non-empty string")
+
+    if config["instrument"] not in {"1", "2"}:
+        raise ConfigError("instrument must be '1' (piano) or '2' (guitar)")
 
     if config["purpose"] not in {"1", "2"}:
         raise ConfigError("purpose must be '1' or '2'")

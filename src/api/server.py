@@ -19,19 +19,20 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 #  1. 백그라운드 작업 (AI 로직 + 보내기)
 # 이 함수는 202 응답(return)이 나간 뒤에 혼자 실행됩니다.
 # ======================================================
-def process_sheet_generation(job_id: str, input_path: Path, title: str, purpose: int, style: int, difficulty: int):
+def process_sheet_generation(job_id: str, input_path: Path, title: str, instrument: int, purpose: int, style: int, difficulty: int):
     try:
         print(f"[{job_id}]  백그라운드 AI 작업 시작...")
-        
+
         # 1) 결과 저장 폴더 지정
         target_output_dir = OUTPUT_DIR / job_id
-        
+
         # 2) AI 파이프라인 실행 (시간 오래 걸림)
         # 여기서 시간이 걸려도 백엔드 연결은 이미 끊겨서 타임아웃 안 남!
         xml_path_result = run_pipeline(
             {
                 "file": str(input_path),
                 "title": title,
+                "instrument": str(instrument),
                 "purpose": str(purpose),
                 "style": str(style),
                 "difficulty": str(difficulty),
@@ -62,9 +63,10 @@ def process_sheet_generation(job_id: str, input_path: Path, title: str, purpose:
 # ======================================================
 @app.post("/create_sheets/ai", status_code=202)
 async def receive_from_backend(
-    background_tasks: BackgroundTasks, #비동기 도구 추가
+    background_tasks: BackgroundTasks,
     job_id: str = Form(...),
     title: str = Form(...),
+    instrument: int = Form(...),
     purpose: int = Form(...),
     style: int = Form(...),
     difficulty: int = Form(...),
@@ -83,12 +85,13 @@ async def receive_from_backend(
         # 2) 백그라운드 작업 예약 
         # run_pipeline을 직접 실행하지 않고, 등록만 함
         background_tasks.add_task(
-            process_sheet_generation, 
-            job_id, 
-            input_path, 
-            title, 
-            purpose, 
-            style, 
+            process_sheet_generation,
+            job_id,
+            input_path,
+            title,
+            instrument,
+            purpose,
+            style,
             difficulty
         )
 

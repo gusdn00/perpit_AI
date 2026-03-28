@@ -3,14 +3,15 @@ import soundfile as sf
 import numpy as np
 import librosa
 
-def extract_chords(wav_path: Path) -> list:
+def extract_chords(wav_path: Path) -> tuple:
     """
-    Extract chords from a given audio file path.
+    Extract chords and BPM from a given audio file path.
     Args:
         wav_path (Path): Path to the audio file.
     Returns:
-        list: A list of dictionaries containing chord information.
-              e.g., [{'chord': 'C', 'start': 0.0, 'end': 1.0}, ...]
+        tuple: (chords, tempo)
+            - chords: list of dicts [{'chord': 'C', 'start': 0.0, 'end': 1.0}, ...]
+            - tempo: float, BPM
     """
     
     # 1. Validate Path
@@ -19,7 +20,7 @@ def extract_chords(wav_path: Path) -> list:
 
     if not wav_path.exists():
         print(f"❌ File not found: {wav_path}")
-        return []
+        return [], 120.0
 
     print(f"🎸 Chord Extraction Start: {wav_path.name}")
 
@@ -28,7 +29,7 @@ def extract_chords(wav_path: Path) -> list:
         y, sr = sf.read(str(wav_path))
     except Exception as e:
         print(f"❌ Error loading audio: {e}")
-        return []
+        return [], 120.0
 
     # 3. Convert to Mono (if stereo)
     if len(y.shape) > 1:
@@ -38,9 +39,11 @@ def extract_chords(wav_path: Path) -> list:
     return _analyze_signal(y, sr)
 
 
-def _analyze_signal(y, sr):
+def _analyze_signal(y, sr) -> tuple:
     """
     Internal logic to analyze audio signal and extract chords.
+    Returns:
+        tuple: (chords, tempo)
     """
     # Harmonic Separation
     y_harmonic = librosa.effects.harmonic(y)
@@ -53,7 +56,7 @@ def _analyze_signal(y, sr):
     chroma = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr)
     
     if len(beat_frames) == 0:
-        return []
+        return [], float(tempo)
         
     chroma_synced = librosa.util.sync(chroma, beat_frames)
     
@@ -92,5 +95,5 @@ def _analyze_signal(y, sr):
             result_chords[-1]['end'] = chord_info['end']
         else:
             result_chords.append(chord_info)
-            
-    return result_chords
+
+    return result_chords, float(tempo)
