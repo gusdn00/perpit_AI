@@ -1,0 +1,11 @@
+progress.md
+
+# 업로드/결과물
+uploads/
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
