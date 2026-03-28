@@ -80,7 +80,7 @@ def _analyze_signal(y, sr) -> tuple:
     duration = len(y) / sr
     time_points = np.append(beat_times, duration)
     
-    for i in range(chroma_synced.shape[1]):
+    for i in range(min(chroma_synced.shape[1], len(time_points) - 1)):
         correlations = np.dot(templates, chroma_synced[:, i])
         best_idx = np.argmax(correlations)
         
