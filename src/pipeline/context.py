@@ -19,8 +19,8 @@ class PipelineContext:
 
     # === intermediate outputs ===
     standard_wav: Path | None = None
-    separated_tracks: dict | None = None   # demucs 분리 결과 {"vocals": Path, "piano": Path, ...}
-    pitch_midi: Path | None = None
+    transcribed_tracks: dict | None = None  # YourMT3 추출 결과 {"piano": Path, "guitar": Path, "selected": Path, ...}
+    selected_midi: Path | None = None       # 파이프라인에서 사용할 메인 MIDI (transcribed_tracks["selected"])
     chords: list | None = None             # 코드 추출 결과 [{"chord": "C", "start": 0.0, "end": 2.5}, ...]
     tempo: float | None = None             # BPM
 

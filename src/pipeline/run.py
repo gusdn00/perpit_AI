@@ -1,31 +1,108 @@
-import shutil
+"""
+pipeline/run.py - PerPit AI 메인 파이프라인
+
+Before (8단계): 음원 → 전처리 → demucs 분리 → Basic Pitch → MIDI 후처리 → 코드추출 → 편곡 → XML
+After  (6단계): 음원 → 전처리 → YourMT3 → 코드추출 → 편곡 → XML
+
+관련 이슈:
+    #17 - YourMT3로 피치 추출 교체
+    #16 - pipeline/run.py 교체
+"""
+
 from pathlib import Path
 
+from src.audio.preprocess import preprocess_audio
+from src.transcription.yourmt3_extractor import transcribe_audio
+from src.chord.chords_extract import extract_chords
+from src.arrange.arranger import arrange
+from src.pipeline.context import PipelineContext
+
+
 def run_pipeline(args: dict, out_dir: Path) -> str:
-    
-    # 1. purpose 값 확인 (문자열로 들어올 수 있으니 안전하게 처리)
-    # 백엔드에서 1, 2 등을 보내줌
-    purpose = str(args.get("purpose", "1"))
-    
-    print(f"--- [TEST PIPELINE] 요청된 purpose: {purpose} ---")
+    """
+    PerPit AI 파이프라인 실행.
 
-    # 2. purpose에 따른 원본 파일 경로 설정 (절대 경로)
-    if purpose == "1":
-        source_file = Path("/home/jisu/PerPitModel/outputs/pps1/result.xml")
-    elif purpose == "2":
-        source_file = Path("/home/jisu/PerPitModel/outputs/pps2/result.xml")
+    Args:
+        args:    API 요청 파라미터
+                 {
+                   "file":       str,  # 업로드된 오디오 경로
+                   "title":      str,
+                   "instrument": str,  # "1"=피아노, "2"=기타
+                   "purpose":    str,  # "1"=반주용, "2"=연주용
+                   "style":      str,  # "1"=팝, "2"=발라드, "3"=오리지널
+                   "difficulty": str,  # "1"=Easy, "2"=Normal
+                 }
+        out_dir: 결과물 저장 디렉토리 (job_id 기반, server.py가 생성)
 
-    # 3. 결과 파일이 저장될 경로 (outputs/{job_id}/score.xml)
-    # out_dir은 server.py에서 이미 생성해서 넘겨줍니다.
-    target_path = out_dir / "score.xml"
+    Returns:
+        score.xml 절대 경로 (str)
+    """
 
-    # 4. 파일 복사 수행
-    if source_file.exists():
-        shutil.copy(source_file, target_path)
-        print(f"파일 복사 성공: {source_file} -> {target_path}")
-    else:
-        # 지정된 경로에 파일이 없으면 에러 발생
-        raise FileNotFoundError(f"{source_file}")
+    # ── Context 생성 ──────────────────────────────────────────────────────────
+    ctx = PipelineContext(
+        file=Path(args["file"]),
+        title=args.get("title", "Untitled"),
+        instrument=str(args.get("instrument", "1")),
+        purpose=str(args.get("purpose", "1")),
+        style=str(args.get("style", "1")),
+        difficulty=str(args.get("difficulty", "2")),
+        has_lyrics=False,  # 현재 미사용 (보컬 감지 미구현)
+    )
 
-    # 5. 복사된 파일의 경로를 문자열로 반환 (server.py로 전달)
-    return str(target_path)
+    print(f"\n{'='*60}")
+    print(f"[Pipeline] 시작: {ctx.title}")
+    print(f"  instrument={ctx.instrument}  purpose={ctx.purpose}  style={ctx.style}  difficulty={ctx.difficulty}")
+    print(f"{'='*60}\n")
+
+    # ── Step 1: 오디오 전처리 (mp3/wav → 표준 wav) ────────────────────────────
+    print("[Step 1] 오디오 전처리")
+    ctx.standard_wav = preprocess_audio(
+        input_path=ctx.file,
+        out_dir=out_dir / "audio",
+    )
+
+    # ── Step 2: YourMT3 음 추출 (demucs + basic_pitch 대체) ──────────────────
+    print("\n[Step 2] YourMT3 음 추출")
+    ctx.transcribed_tracks = transcribe_audio(
+        wav_path=ctx.standard_wav,
+        out_dir=out_dir / "midi",
+        instrument=ctx.instrument,
+    )
+    ctx.selected_midi = ctx.transcribed_tracks["selected"]
+
+    # ── Step 3: 코드 추출 ────────────────────────────────────────────────────
+    print("\n[Step 3] 코드 추출")
+    ctx.chords, ctx.tempo = extract_chords(ctx.standard_wav)
+    print(f"   BPM={ctx.tempo:.1f}  코드 수={len(ctx.chords)}")
+
+    # ── Step 4: 편곡 (arranger → music21 Score) ───────────────────────────────
+    print("\n[Step 4] 편곡")
+    # 기타(instrument=2) or 반주용(purpose=1): 멜로디 MIDI 불필요
+    melody_midi = None
+    if ctx.instrument == "1" and ctx.purpose == "2":
+        melody_midi = ctx.selected_midi
+
+    score = arrange(
+        melody_midi_path=melody_midi,
+        chords=ctx.chords,
+        bpm=ctx.tempo,
+        instrument=ctx.instrument,
+        purpose=ctx.purpose,
+        style=ctx.style,
+        difficulty=ctx.difficulty,
+        title=ctx.title,
+    )
+
+    # ── Step 5: MusicXML 저장 ─────────────────────────────────────────────────
+    print("\n[Step 5] MusicXML 저장")
+    xml_path = out_dir / "score.xml"
+    xml_path.parent.mkdir(parents=True, exist_ok=True)
+    score.write("musicxml", str(xml_path))
+    ctx.output_xml = xml_path
+    print(f"   저장 완료: {xml_path}")
+
+    print(f"\n{'='*60}")
+    print(f"[Pipeline] 완료: {ctx.title} → {xml_path.name}")
+    print(f"{'='*60}\n")
+
+    return str(xml_path)
