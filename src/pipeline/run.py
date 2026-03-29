@@ -15,6 +15,7 @@ from src.audio.preprocess import preprocess_audio
 from src.transcription.yourmt3_extractor import transcribe_audio
 from src.chord.chords_extract import extract_chords
 from src.arrange.arranger import arrange
+from src.io.guitar_tab_xml_writer import write_guitar_dual_staff_musicxml
 from src.pipeline.context import PipelineContext
 
 
@@ -82,22 +83,33 @@ def run_pipeline(args: dict, out_dir: Path) -> str:
     if ctx.instrument == "1" and ctx.purpose == "2":
         melody_midi = ctx.selected_midi
 
-    score = arrange(
-        melody_midi_path=melody_midi,
-        chords=ctx.chords,
-        bpm=ctx.tempo,
-        instrument=ctx.instrument,
-        purpose=ctx.purpose,
-        style=ctx.style,
-        difficulty=ctx.difficulty,
-        title=ctx.title,
-    )
-
     # ── Step 5: MusicXML 저장 ─────────────────────────────────────────────────
     print("\n[Step 5] MusicXML 저장")
     xml_path = out_dir / "score.xml"
     xml_path.parent.mkdir(parents=True, exist_ok=True)
-    score.write("musicxml", str(xml_path))
+
+    if ctx.instrument == "2":
+        write_guitar_dual_staff_musicxml(
+            out_path=xml_path,
+            title=ctx.title,
+            chords=ctx.chords,
+            bpm=ctx.tempo,
+            style=ctx.style,
+            difficulty=ctx.difficulty,
+        )
+    else:
+        score = arrange(
+            melody_midi_path=melody_midi,
+            chords=ctx.chords,
+            bpm=ctx.tempo,
+            instrument=ctx.instrument,
+            purpose=ctx.purpose,
+            style=ctx.style,
+            difficulty=ctx.difficulty,
+            title=ctx.title,
+        )
+        score.write("musicxml", str(xml_path))
+
     ctx.output_xml = xml_path
     print(f"   저장 완료: {xml_path}")
 
