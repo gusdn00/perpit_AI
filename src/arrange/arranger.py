@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Optional
 from music21 import (
     stream, note, chord as m21chord, clef,
-    metadata, meter, tempo as m21tempo, converter
+    metadata, meter, tempo as m21tempo, converter,
+    articulations, layout
 )
 
 
@@ -30,6 +31,38 @@ _NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 # style 숫자 → 이름 (로그용)
 _STYLE_NAME = {"1": "팝", "2": "발라드", "3": "오리지널"}
+
+# 표준 기타 튜닝 MIDI (6번줄 → 1번줄)
+_GUITAR_STRING_MIDI = [40, 45, 50, 55, 59, 64]  # E2 A2 D3 G3 B3 E4
+
+# 코드명 → 기타 보이싱 (6번줄 → 1번줄, x=뮤트)
+# 현재 chord extractor는 메이저/마이너까지만 출력하므로 그 범위에 맞춰 정의.
+_GUITAR_TAB_SHAPES = {
+    "C":  ["x", 3, 2, 0, 1, 0],
+    "C#": ["x", 4, 6, 6, 6, 4],
+    "D":  ["x", "x", 0, 2, 3, 2],
+    "D#": ["x", 6, 8, 8, 8, 6],
+    "E":  [0, 2, 2, 1, 0, 0],
+    "F":  [1, 3, 3, 2, 1, 1],
+    "F#": [2, 4, 4, 3, 2, 2],
+    "G":  [3, 2, 0, 0, 0, 3],
+    "G#": [4, 6, 6, 5, 4, 4],
+    "A":  ["x", 0, 2, 2, 2, 0],
+    "A#": ["x", 1, 3, 3, 3, 1],
+    "B":  ["x", 2, 4, 4, 4, 2],
+    "Cm": ["x", 3, 5, 5, 4, 3],
+    "C#m": ["x", 4, 6, 6, 5, 4],
+    "Dm": ["x", "x", 0, 2, 3, 1],
+    "D#m": ["x", 6, 8, 8, 7, 6],
+    "Em": [0, 2, 2, 0, 0, 0],
+    "Fm": [1, 3, 3, 1, 1, 1],
+    "F#m": [2, 4, 4, 2, 2, 2],
+    "Gm": [3, 5, 5, 3, 3, 3],
+    "G#m": [4, 6, 6, 4, 4, 4],
+    "Am": ["x", 0, 2, 2, 1, 0],
+    "A#m": ["x", 1, 3, 3, 2, 1],
+    "Bm": ["x", 2, 4, 4, 3, 2],
+}
 
 
 # ── 헬퍼 함수 ─────────────────────────────────────────────────────────────
@@ -84,6 +117,109 @@ def _quantize(value: float, grid: float) -> float:
 def _get_grid(difficulty: str) -> float:
     """난이도별 양자화 단위: Easy=0.5(8분음표), Normal=0.25(16분음표)"""
     return 0.5 if difficulty == "1" else 0.25
+
+
+def _shape_to_tab_notes(shape: list) -> list[dict]:
+    """
+    기타 보이싱 shape를 실제 TAB 음 정보로 변환.
+
+    Args:
+        shape: 6번줄→1번줄 프렛 배열. 예) ["x", 3, 2, 0, 1, 0]
+
+    Returns:
+        [
+            {"string": 5, "fret": 3, "midi": 48},
+            ...
+        ]
+    """
+    tab_notes = []
+    for idx, fret in enumerate(shape):
+        if fret == "x":
+            continue
+
+        string_number = 6 - idx  # MusicXML: 1=가장 높은 줄, 6=가장 낮은 줄
+        midi_number = _GUITAR_STRING_MIDI[idx] + int(fret)
+        tab_notes.append({
+            "string": string_number,
+            "fret": int(fret),
+            "midi": midi_number,
+        })
+
+    return tab_notes
+
+
+def _get_guitar_tab_notes(chord_name: str, difficulty: str) -> list[dict]:
+    """
+    코드명에 해당하는 기타 TAB 음 목록 반환.
+    반주용 TAB이므로 동시 발음 수를 줄여 상위 현 중심으로 단순화한다.
+    """
+    shape = _GUITAR_TAB_SHAPES.get(chord_name, _GUITAR_TAB_SHAPES["C"])
+    tab_notes = _shape_to_tab_notes(shape)
+
+    keep_count = 2 if difficulty == "1" else 3
+    if len(tab_notes) > keep_count:
+        tab_notes = tab_notes[-keep_count:]
+
+    return tab_notes
+
+
+def _make_guitar_tab_note(tab_note: dict, duration: float) -> note.Note:
+    """TAB용 단일 음표 생성 후 string/fret technical 정보 부착."""
+    n = note.Note(_midi_pitch_name(tab_note["midi"]), quarterLength=duration)
+    n.articulations.append(articulations.StringIndication(tab_note["string"]))
+    n.articulations.append(articulations.FretIndication(tab_note["fret"]))
+    return n
+
+
+def _make_standard_guitar_note(tab_note: dict, duration: float) -> note.Note:
+    """위 오선보용 기타 음표 생성."""
+    return note.Note(_midi_pitch_name(tab_note["midi"]), quarterLength=duration)
+
+
+def _build_guitar_pattern_events(
+    tab_notes: list[dict],
+    start_beat: float,
+    end_beat: float,
+    style: str,
+    difficulty: str,
+    grid: float,
+) -> list[dict]:
+    """
+    기타 반주를 스트로크 중심 이벤트로 변환한다.
+    """
+    events = []
+    if not tab_notes or end_beat <= start_beat:
+        return events
+
+    low_to_high = sorted(tab_notes, key=lambda x: x["string"], reverse=True)
+
+    if style == "2":
+        step = 2.0
+    elif style == "1":
+        step = 1.0
+    else:
+        step = 1.0
+
+    start_beat = _quantize(start_beat, step)
+    end_beat = _quantize(end_beat, step)
+    if end_beat <= start_beat:
+        end_beat = start_beat + step
+
+    beat = start_beat
+
+    while beat < end_beat:
+        dur = min(step, end_beat - beat)
+        if dur <= 0:
+            break
+
+        events.append({
+            "beat": beat,
+            "duration": dur,
+            "tab_notes": low_to_high,
+        })
+        beat = round(beat + step, 4)
+
+    return events
 
 
 # ── 파트 빌더: 왼손 반주 ──────────────────────────────────────────────────
@@ -293,64 +429,63 @@ def _build_voicing_part(chords: list, bpm: float, style: str, difficulty: str) -
     return part
 
 
-# ── 파트 빌더: 기타 ───────────────────────────────────────────────────────
+# ── 파트 빌더: 기타 2단 스태프 ──────────────────────────────────────────────
 
-def _build_guitar_part(chords: list, bpm: float, style: str, difficulty: str) -> stream.Part:
+def _build_guitar_staff_parts(
+    chords: list, bpm: float, style: str, difficulty: str
+) -> tuple[stream.PartStaff, stream.PartStaff, layout.StaffGroup]:
     """
-    기타: 단일 높은음자리표, 코드 반주 패턴 (옥타브 3 영역)
+    기타: 위 standard notation + 아래 TAB의 2단 스태프 생성.
 
     스타일별:
-      발라드: 아르페지오 피킹 0.5박씩
-      팝:    파워코드 [근음+5음] 다운스트로크 2박씩
-      오리지널: 블록코드 스트로크 1박씩
+      발라드: 8분음표 아르페지오
+      팝:    8분음표 기반 단선율 패턴
+      오리지널: 상/하행 교차 패턴
     """
-    part = stream.Part()
-    part.partName = "Guitar"
-    part.append(clef.TrebleClef())
-    part.append(meter.TimeSignature('4/4'))
+    standard_part = stream.PartStaff()
+    standard_part.partName = "Guitar"
+    standard_part.append(clef.TrebleClef())
+    standard_part.append(meter.TimeSignature('4/4'))
 
+    tab_part = stream.PartStaff()
+    tab_part.partName = "Guitar TAB"
+    tab_part.append(clef.TabClef())
+    tab_part.append(layout.StaffLayout(staffLines=6))
+    tab_part.append(meter.TimeSignature('4/4'))
     grid = _get_grid(difficulty)
 
     for c in chords:
-        start_beat = _quantize(_to_beats(c["start"], bpm), grid)
-        end_beat   = _quantize(_to_beats(c["end"],   bpm), grid)
+        start_beat = _to_beats(c["start"], bpm)
+        end_beat   = _to_beats(c["end"], bpm)
+        tab_notes = _get_guitar_tab_notes(c["chord"], difficulty)
+        events = _build_guitar_pattern_events(
+            tab_notes=tab_notes,
+            start_beat=start_beat,
+            end_beat=end_beat,
+            style=style,
+            difficulty=difficulty,
+            grid=grid,
+        )
 
-        midi_notes = _chord_midi_notes(c["chord"], base_octave=3, difficulty=difficulty)
-        pitches = [_midi_pitch_name(m) for m in midi_notes]
-        root_p  = pitches[0]
-        fifth_p = pitches[2] if len(pitches) > 2 else pitches[-1]
+        for event in events:
+            onset = event["beat"]
+            duration = event["duration"]
+            selected_notes = event["tab_notes"]
+            velocity = 65 if style == "2" else 90 if style == "1" else 80
 
-        if style == "2":
-            # 발라드: 아르페지오 피킹 (0.5박씩)
-            beat, idx = start_beat, 0
-            while beat < end_beat:
-                n = note.Note(pitches[idx % len(pitches)], quarterLength=min(0.5, end_beat - beat))
-                n.volume.velocity = 65
-                part.insert(beat, n)
-                beat = _quantize(beat + 0.5, grid)
-                idx += 1
+            for tab_note in selected_notes:
+                upper = _make_standard_guitar_note(tab_note, duration)
+                lower = _make_guitar_tab_note(tab_note, duration)
+                upper.volume.velocity = velocity
+                lower.volume.velocity = velocity
+                standard_part.insert(onset, upper)
+                tab_part.insert(onset, lower)
 
-        elif style == "1":
-            # 팝: 파워코드 다운스트로크 (2박씩)
-            beat = start_beat
-            while beat < end_beat:
-                dur = min(2.0, end_beat - beat)
-                ch = m21chord.Chord([root_p, fifth_p], quarterLength=dur)
-                ch.volume.velocity = 110
-                part.insert(beat, ch)
-                beat = _quantize(beat + 2.0, grid)
+    staff_group = layout.StaffGroup([standard_part, tab_part])
+    staff_group.symbol = "brace"
+    staff_group.barTogether = True
 
-        else:
-            # 오리지널: 블록코드 스트로크 (1박씩)
-            beat = start_beat
-            while beat < end_beat:
-                dur = min(1.0, end_beat - beat)
-                ch = m21chord.Chord(pitches, quarterLength=dur)
-                ch.volume.velocity = 80
-                part.insert(beat, ch)
-                beat = _quantize(beat + 1.0, grid)
-
-    return part
+    return standard_part, tab_part, staff_group
 
 
 # ── 메인 함수 ─────────────────────────────────────────────────────────────
@@ -395,11 +530,15 @@ def arrange(
     mm = m21tempo.MetronomeMark(number=int(bpm))
 
     if instrument == "2":
-        # ── 기타: 단일 파트 ──────────────────────────────────────
-        guitar_part = _build_guitar_part(chords, bpm, style, difficulty)
-        guitar_part.insert(0, mm)
-        score.append(guitar_part)
-        print(f"   → 기타 파트 완성 (style={style_name})")
+        # ── 기타: 위 standard notation + 아래 TAB ───────────────
+        standard_part, tab_part, staff_group = _build_guitar_staff_parts(
+            chords, bpm, style, difficulty
+        )
+        standard_part.insert(0, mm)
+        score.insert(0, standard_part)
+        score.insert(0, tab_part)
+        score.insert(0, staff_group)
+        print(f"   → 기타 2단 스태프 완성 (style={style_name})")
 
     else:
         # ── 피아노 ───────────────────────────────────────────────
