@@ -213,8 +213,12 @@ def write_guitar_dual_staff_musicxml(
     all_events: list[dict] = []
 
     for chord_info in chords:
-        start_beat = chord_info["start"] * (bpm / 60.0)
-        end_beat = chord_info["end"] * (bpm / 60.0)
+        if "start_beat" in chord_info and "end_beat" in chord_info:
+            start_beat = float(chord_info["start_beat"])
+            end_beat = float(chord_info["end_beat"])
+        else:
+            start_beat = chord_info["start"] * (bpm / 60.0)
+            end_beat = chord_info["end"] * (bpm / 60.0)
         tab_notes = _get_guitar_tab_notes(chord_info["chord"], difficulty)
         chord_events = _build_guitar_pattern_events(
             tab_notes=tab_notes,

@@ -87,12 +87,15 @@ def _analyze_signal(y, sr) -> tuple:
         chord_info = {
             "chord": labels[best_idx],
             "start": round(time_points[i], 2),
-            "end": round(time_points[i+1], 2)
+            "end": round(time_points[i+1], 2),
+            "start_beat": float(i),
+            "end_beat": float(i + 1),
         }
         
         # Merge consecutive identical chords
         if result_chords and result_chords[-1]['chord'] == chord_info['chord']:
             result_chords[-1]['end'] = chord_info['end']
+            result_chords[-1]['end_beat'] = chord_info['end_beat']
         else:
             result_chords.append(chord_info)
 
