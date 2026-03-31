@@ -16,7 +16,47 @@ from src.transcription.yourmt3_extractor import transcribe_audio
 from src.chord.chords_extract import extract_chords
 from src.arrange.arranger import arrange
 from src.io.guitar_tab_xml_writer import write_guitar_dual_staff_musicxml
+from src.io.musicxml_postprocess import trim_trailing_empty_measures
 from src.pipeline.context import PipelineContext
+
+
+def _normalize_chord_timeline(chords: list[dict]) -> list[dict]:
+    """
+    첫 코드 시작 시점을 0으로 당겨 악보 앞쪽의 긴 공백 마디를 줄인다.
+    """
+    if not chords:
+        return chords
+
+    first_start = float(chords[0].get("start", 0.0))
+    first_start_beat = float(chords[0].get("start_beat", 0.0))
+    if first_start <= 0:
+        return chords
+
+    normalized = []
+    for chord in chords:
+        normalized.append({
+            **chord,
+            "start": max(0.0, round(float(chord["start"]) - first_start, 4)),
+            "end": max(0.0, round(float(chord["end"]) - first_start, 4)),
+            "start_beat": max(0.0, round(float(chord.get("start_beat", 0.0)) - first_start_beat, 4)),
+            "end_beat": max(0.0, round(float(chord.get("end_beat", 0.0)) - first_start_beat, 4)),
+        })
+    return normalized
+
+
+def _derive_tempo_from_chords(chords: list[dict], fallback_bpm: float) -> float:
+    """
+    beat 수와 정규화된 chord 길이로부터 score 길이와 일치하는 BPM을 다시 계산한다.
+    """
+    if not chords:
+        return fallback_bpm
+
+    last_end = float(chords[-1].get("end", 0.0))
+    last_end_beat = float(chords[-1].get("end_beat", 0.0))
+    if last_end <= 0 or last_end_beat <= 0:
+        return fallback_bpm
+
+    return (last_end_beat * 60.0) / last_end
 
 
 def run_pipeline(args: dict, out_dir: Path) -> str:
@@ -74,14 +114,19 @@ def run_pipeline(args: dict, out_dir: Path) -> str:
     # ── Step 3: 코드 추출 ────────────────────────────────────────────────────
     print("\n[Step 3] 코드 추출")
     ctx.chords, ctx.tempo = extract_chords(ctx.standard_wav)
+    ctx.chords = _normalize_chord_timeline(ctx.chords)
+    ctx.tempo = _derive_tempo_from_chords(ctx.chords, ctx.tempo)
     print(f"   BPM={ctx.tempo:.1f}  코드 수={len(ctx.chords)}")
 
     # ── Step 4: 편곡 (arranger → music21 Score) ───────────────────────────────
     print("\n[Step 4] 편곡")
     # 기타(instrument=2) or 반주용(purpose=1): 멜로디 MIDI 불필요
     melody_midi = None
+    rhythm_midi = None
     if ctx.instrument == "1" and ctx.purpose == "2":
         melody_midi = ctx.selected_midi
+    elif ctx.instrument == "1" and ctx.purpose == "1":
+        rhythm_midi = ctx.transcribed_tracks.get("all")
 
     # ── Step 5: MusicXML 저장 ─────────────────────────────────────────────────
     print("\n[Step 5] MusicXML 저장")
@@ -100,6 +145,7 @@ def run_pipeline(args: dict, out_dir: Path) -> str:
     else:
         score = arrange(
             melody_midi_path=melody_midi,
+            rhythm_midi_path=rhythm_midi,
             chords=ctx.chords,
             bpm=ctx.tempo,
             instrument=ctx.instrument,
@@ -111,6 +157,7 @@ def run_pipeline(args: dict, out_dir: Path) -> str:
         score.write("musicxml", str(xml_path))
 
     ctx.output_xml = xml_path
+    trim_trailing_empty_measures(xml_path)
     print(f"   저장 완료: {xml_path}")
 
     print(f"\n{'='*60}")

@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pretty_midi
 import torchaudio
+import soundfile as sf
 
 
 _DEFAULT_YOURMT3_DIR = os.environ.get(
@@ -104,16 +105,31 @@ def _prepare_audio_info(audio_filepath: str) -> dict:
     app.py의 prepare_media()와 동일한 audio_info 딕셔너리 생성.
     spaces 의존성 없이 로컬에서 직접 사용 가능.
     """
-    info = torchaudio.info(audio_filepath)
+    try:
+        info = torchaudio.info(audio_filepath)
+        sample_rate = int(info.sample_rate)
+        bits_per_sample = int(info.bits_per_sample)
+        num_channels = int(info.num_channels)
+        num_frames = int(info.num_frames)
+        encoding = str.lower(info.encoding)
+    except AttributeError:
+        audio_info = sf.info(audio_filepath)
+        sample_rate = int(audio_info.samplerate)
+        subtype = audio_info.subtype_info or ""
+        bits_per_sample = 16 if "16" in subtype else 24 if "24" in subtype else 0
+        num_channels = int(audio_info.channels)
+        num_frames = int(audio_info.frames)
+        encoding = str.lower(audio_info.format)
+
     return {
         "filepath": audio_filepath,
         "track_name": os.path.basename(audio_filepath).split(".")[0],
-        "sample_rate": int(info.sample_rate),
-        "bits_per_sample": int(info.bits_per_sample),
-        "num_channels": int(info.num_channels),
-        "num_frames": int(info.num_frames),
-        "duration": int(info.num_frames / info.sample_rate),
-        "encoding": str.lower(info.encoding),
+        "sample_rate": sample_rate,
+        "bits_per_sample": bits_per_sample,
+        "num_channels": num_channels,
+        "num_frames": num_frames,
+        "duration": int(num_frames / sample_rate),
+        "encoding": encoding,
     }
 
 

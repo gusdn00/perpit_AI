@@ -14,7 +14,7 @@ from typing import Optional
 from music21 import (
     stream, note, chord as m21chord, clef,
     metadata, meter, tempo as m21tempo, converter,
-    articulations, layout
+    articulations, layout, instrument as m21instrument
 )
 
 
@@ -105,6 +105,15 @@ def _chord_midi_notes(chord_name: str, base_octave: int = 3, difficulty: str = "
 def _to_beats(seconds: float, bpm: float) -> float:
     """초(seconds) → 박(beat) 변환: beat = seconds * (bpm / 60)"""
     return seconds * (bpm / 60.0)
+
+
+def _chord_start_end_beats(chord_info: dict, bpm: float) -> tuple[float, float]:
+    """
+    chord extractor가 제공한 beat 기준이 있으면 우선 사용하고, 없으면 초→박 변환을 사용한다.
+    """
+    if "start_beat" in chord_info and "end_beat" in chord_info:
+        return float(chord_info["start_beat"]), float(chord_info["end_beat"])
+    return _to_beats(chord_info["start"], bpm), _to_beats(chord_info["end"], bpm)
 
 
 def _quantize(value: float, grid: float) -> float:
@@ -243,8 +252,9 @@ def _build_accompaniment_part(
     grid = _get_grid(difficulty)
 
     for c in chords:
-        start_beat = _quantize(_to_beats(c["start"], bpm), grid)
-        end_beat   = _quantize(_to_beats(c["end"],   bpm), grid)
+        raw_start_beat, raw_end_beat = _chord_start_end_beats(c, bpm)
+        start_beat = _quantize(raw_start_beat, grid)
+        end_beat   = _quantize(raw_end_beat, grid)
         duration   = max(end_beat - start_beat, grid)
 
         midi_notes = _chord_midi_notes(c["chord"], base_octave=octave, difficulty=difficulty)
@@ -303,8 +313,9 @@ def _build_bassline_part(chords: list, bpm: float, style: str, difficulty: str) 
     grid = _get_grid(difficulty)
 
     for c in chords:
-        start_beat = _quantize(_to_beats(c["start"], bpm), grid)
-        end_beat   = _quantize(_to_beats(c["end"],   bpm), grid)
+        raw_start_beat, raw_end_beat = _chord_start_end_beats(c, bpm)
+        start_beat = _quantize(raw_start_beat, grid)
+        end_beat   = _quantize(raw_end_beat, grid)
         duration   = max(end_beat - start_beat, grid)
 
         # 베이스는 옥타브 2 (C2=36 영역, 더 낮은 음)
@@ -375,6 +386,119 @@ def _build_melody_part(melody_midi_path: Optional[Path], difficulty: str) -> str
     return part
 
 
+def _insert_pitches_into_part(
+    part: stream.Part,
+    midi_numbers: list[int],
+    onset: float,
+    duration: float,
+    velocity: int,
+) -> None:
+    if not midi_numbers:
+        return
+
+    if len(midi_numbers) == 1:
+        elem = note.Note(midi_numbers[0], quarterLength=duration)
+    else:
+        elem = m21chord.Chord(midi_numbers, quarterLength=duration)
+
+    elem.volume.velocity = velocity
+    part.insert(onset, elem)
+
+
+def _trim_event_pitches(midi_numbers: list[int], hand: str) -> list[int]:
+    unique_midis = sorted(set(midi_numbers))
+    if hand == "right":
+        return unique_midis[-4:]
+    return unique_midis[:2]
+
+
+def _build_rhythm_reduction_parts(
+    rhythm_midi_path: Optional[Path],
+    difficulty: str,
+) -> tuple[stream.Part, stream.Part]:
+    """
+    멀티트랙 MIDI를 피아노 2단 리덕션으로 변환해 원곡 리듬을 최대한 유지한다.
+    """
+    right = stream.Part()
+    right.partName = "Right Hand"
+    right.append(clef.TrebleClef())
+    right.append(meter.TimeSignature('4/4'))
+
+    left = stream.Part()
+    left.partName = "Left Hand"
+    left.append(clef.BassClef())
+    left.append(meter.TimeSignature('4/4'))
+
+    if not rhythm_midi_path or not rhythm_midi_path.exists():
+        print("   ⚠️  리듬 MIDI 없음 → 코드 기반 반주로 fallback")
+        return right, left
+
+    grid = _get_grid(difficulty)
+
+    try:
+        midi_score = converter.parse(str(rhythm_midi_path))
+        right_events: dict[tuple[float, float], list[int]] = {}
+        left_events: dict[tuple[float, float], list[int]] = {}
+        inserted_count = 0
+
+        for midi_part in midi_score.parts:
+            part_name = (midi_part.partName or "").lower()
+            instruments = midi_part.getInstruments(returnDefault=True)
+            if any(isinstance(inst, m21instrument.UnpitchedPercussion) for inst in instruments):
+                continue
+            if "drum" in part_name:
+                continue
+
+            is_bass_track = "bass" in part_name
+
+            for elem in midi_part.flatten().notes:
+                onset = _quantize(float(elem.offset), grid)
+                duration = max(_quantize(float(elem.duration.quarterLength), grid), grid)
+
+                if isinstance(elem, note.Note):
+                    midi_numbers = [int(elem.pitch.midi)]
+                    velocity = getattr(elem.volume, "velocity", 80) or 80
+                else:
+                    midi_numbers = sorted(int(p.midi) for p in elem.pitches)
+                    velocity = getattr(elem.volume, "velocity", 80) or 80
+
+                if not midi_numbers:
+                    continue
+
+                if is_bass_track:
+                    left_midis = midi_numbers
+                    right_midis = []
+                else:
+                    right_midis = [m for m in midi_numbers if m >= 60]
+                    left_midis = [m for m in midi_numbers if m < 60]
+
+                    if not right_midis and midi_numbers:
+                        highest = max(midi_numbers)
+                        if highest >= 55:
+                            right_midis = [highest]
+                            left_midis = [m for m in midi_numbers if m != highest]
+
+                if right_midis:
+                    right_events.setdefault((onset, duration), []).extend(right_midis)
+                if left_midis:
+                    left_events.setdefault((onset, duration), []).extend(left_midis)
+                inserted_count += len(right_midis) + len(left_midis)
+
+        for (onset, duration), midi_numbers in sorted(right_events.items()):
+            trimmed = _trim_event_pitches(midi_numbers, "right")
+            _insert_pitches_into_part(right, trimmed, onset, duration, 80)
+
+        for (onset, duration), midi_numbers in sorted(left_events.items()):
+            trimmed = _trim_event_pitches(midi_numbers, "left")
+            _insert_pitches_into_part(left, trimmed, onset, duration, 75)
+
+        print(f"   ✅ 리듬 리덕션 MIDI 반영: {inserted_count}개 음표/코드")
+    except Exception as e:
+        print(f"   ⚠️  리듬 MIDI 리덕션 실패: {e}")
+
+    return right, left
+
+
 def _build_voicing_part(chords: list, bpm: float, style: str, difficulty: str) -> stream.Part:
     """
     피아노 반주용 오른손: 코드 보이싱 (옥타브 4 영역)
@@ -392,8 +516,9 @@ def _build_voicing_part(chords: list, bpm: float, style: str, difficulty: str) -
     grid = _get_grid(difficulty)
 
     for c in chords:
-        start_beat = _quantize(_to_beats(c["start"], bpm), grid)
-        end_beat   = _quantize(_to_beats(c["end"],   bpm), grid)
+        raw_start_beat, raw_end_beat = _chord_start_end_beats(c, bpm)
+        start_beat = _quantize(raw_start_beat, grid)
+        end_beat   = _quantize(raw_end_beat, grid)
         duration   = max(end_beat - start_beat, grid)
 
         # 오른손: 옥타브 4 (C4=60 영역)
@@ -455,8 +580,7 @@ def _build_guitar_staff_parts(
     grid = _get_grid(difficulty)
 
     for c in chords:
-        start_beat = _to_beats(c["start"], bpm)
-        end_beat   = _to_beats(c["end"], bpm)
+        start_beat, end_beat = _chord_start_end_beats(c, bpm)
         tab_notes = _get_guitar_tab_notes(c["chord"], difficulty)
         events = _build_guitar_pattern_events(
             tab_notes=tab_notes,
@@ -492,6 +616,7 @@ def _build_guitar_staff_parts(
 
 def arrange(
     melody_midi_path: Optional[Path],
+    rhythm_midi_path: Optional[Path],
     chords: list,
     bpm: float,
     instrument: str,
@@ -505,6 +630,7 @@ def arrange(
 
     Args:
         melody_midi_path: 정제된 멜로디 MIDI 경로 (기타 or 반주용이면 None 가능)
+        rhythm_midi_path: 원곡 리듬 보존용 멀티트랙 MIDI 경로
         chords: [{"chord": "C", "start": 0.0, "end": 2.5}, ...] (초 단위)
         bpm:    BPM (chords_extract에서 추출)
         instrument: "1"=피아노, "2"=기타
@@ -548,10 +674,19 @@ def arrange(
             left  = _build_accompaniment_part(chords, bpm, style, difficulty, octave=3)
             print(f"   → 피아노 연주용: 오른손=멜로디, 왼손={style_name} 반주")
         else:
-            # 반주용: 오른손=코드 보이싱, 왼손=베이스라인
-            right = _build_voicing_part(chords, bpm, style, difficulty)
-            left  = _build_bassline_part(chords, bpm, style, difficulty)
-            print(f"   → 피아노 반주용: 오른손=코드보이싱, 왼손=베이스라인")
+            if rhythm_midi_path and rhythm_midi_path.exists():
+                right, left = _build_rhythm_reduction_parts(rhythm_midi_path, difficulty)
+                if len(right.flatten().notes) == 0 and len(left.flatten().notes) == 0:
+                    right = _build_voicing_part(chords, bpm, style, difficulty)
+                    left  = _build_bassline_part(chords, bpm, style, difficulty)
+                    print("   → 리듬 MIDI 비어 있음 → 코드 기반 반주 fallback")
+                else:
+                    print("   → 피아노 반주용: 멀티트랙 MIDI 기반 리듬 리덕션")
+            else:
+                # 반주용: 오른손=코드 보이싱, 왼손=베이스라인
+                right = _build_voicing_part(chords, bpm, style, difficulty)
+                left  = _build_bassline_part(chords, bpm, style, difficulty)
+                print(f"   → 피아노 반주용: 오른손=코드보이싱, 왼손=베이스라인")
 
         right.insert(0, mm)
         score.append(right)
