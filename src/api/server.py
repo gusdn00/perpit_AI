@@ -4,7 +4,8 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from fastapi.responses import JSONResponse
 
 # 님 프로젝트 경로에 맞춰 import
-from src.pipeline.run import run_pipeline
+from src.pipeline.run_demo import run_pipeline  # 시연용: 미리 준비된 악보 반환
+# from src.pipeline.run import run_pipeline  # 실제 파이프라인 (YourMT3 필요)
 from src.utils.callback import send_callback_completed, send_callback_failed
 
 app = FastAPI()

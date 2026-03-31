@@ -160,14 +160,14 @@ def _shape_to_tab_notes(shape: list) -> list[dict]:
 def _get_guitar_tab_notes(chord_name: str, difficulty: str) -> list[dict]:
     """
     코드명에 해당하는 기타 TAB 음 목록 반환.
-    반주용 TAB이므로 동시 발음 수를 줄여 상위 현 중심으로 단순화한다.
+    - Normal(2): shape 전체 사용 (근음 포함 모든 음)
+    - Easy(1): 낮은 줄 3개만 사용 (근음 포함)
     """
     shape = _GUITAR_TAB_SHAPES.get(chord_name, _GUITAR_TAB_SHAPES["C"])
     tab_notes = _shape_to_tab_notes(shape)
 
-    keep_count = 2 if difficulty == "1" else 3
-    if len(tab_notes) > keep_count:
-        tab_notes = tab_notes[-keep_count:]
+    if difficulty == "1" and len(tab_notes) > 3:
+        tab_notes = tab_notes[:3]  # 낮은 줄(근음 쪽)부터 3개
 
     return tab_notes
 
